@@ -504,6 +504,93 @@ CORS_ORIGINS=*
 
 ---
 
+### 6.3 配置快照（导出/导入）
+
+> **v2.0+ 新增**：支持将全部配置（含密钥、分类、提示词）导出为 JSON 文件，方便备份和迁移。
+
+#### 功能入口
+
+点击页面右上角 **⚙️ 设置** → 切换到 **「配置快照」** Tab。
+
+#### 导出配置
+
+| 按钮 | 说明 | 适用场景 |
+|------|------|---------|
+| **复制 Markdown（脱敏）** | 生成 Markdown 格式，API Key 等敏感信息会被打码（如 `LTAI****xxxx`）| 分享配置给他人排查问题 |
+| **复制 JSON（完整）** | 复制完整 JSON 到剪贴板（含所有密钥）| 快速备份或粘贴到其他设备 |
+| **下载 JSON 文件** | 下载 `.json` 文件到本地，文件名格式：`media2text-config-{时间戳}.json` | 长期备份、版本管理 |
+
+导出的 JSON 结构示例：
+
+```json
+{
+  "schema_version": 1,
+  "app": "media2text",
+  "exported_at": "2025-04-25T10:30:00.000Z",
+  "config": {
+    "category": "默认分类",
+    "save_audio_local": true,
+    "save_audio_oss": false,
+    "transcribe_enabled": false,
+    "asr_engine": "funasr",
+    "transcript_save_local": false,
+    "transcript_save_oss": false,
+    "batch_mode": "separate",
+    "merge_title": "",
+    "summary_enabled": false,
+    "summary_model": "qwen",
+    "summary_prompt_title": "默认总结",
+    "save_to_db": false,
+    "dashscope_api_key": "sk-xxxxxxxx",
+    "qwen_api_key": "",
+    "oss_access_key_id": "LTAI5xxxxxxxxx",
+    "oss_access_key_secret": "xxxxxxxxxxxx",
+    "oss_bucket_name": "your-bucket",
+    "oss_endpoint": "oss-cn-hangzhou.aliyuncs.com",
+    "audio_local_base_path": "./output",
+    "transcript_local_base_path": "./output",
+    "temp_dir": "./temp",
+    "push_notion_enabled": false,
+    "push_feishu_enabled": false,
+    "notion_integration_token": "secret_xxxxxxxxxxxx",
+    "notion_database_id": "a1b2c3d4e5f67890abcdef1234567890",
+    "feishu_app_id": "cli_xxxxxxxxxxxx",
+    "feishu_app_secret": "xxxxxxxxxxxx",
+    "feishu_bitable_app_token": "Hxxxxxxxxxxxx",
+    "feishu_table_id": "tblxxxxxxxxxxxx",
+    "db_engine": "sqlite",
+    "sqlite_path": "",
+    "supabase_url": "",
+    "supabase_key": "",
+    "supabase_table": "media2text_records"
+  },
+  "categories": ["默认分类", "会议", "课程"],
+  "prompts": [
+    {
+      "title": "默认总结",
+      "content": "请阅读以下转写文本，用中文输出：关键要点、行动项（如有）、时间线（如能推断），使用 Markdown 小标题分段。"
+    },
+    {
+      "title": "会议纪要",
+      "content": "请提取本次会议的核心决议、待办事项和责任人。"
+    }
+  ]
+}
+```
+
+#### 导入配置
+
+点击 **[从 JSON 导入…]** 按钮，选择之前导出的 `.json` 文件：
+
+- **仅含 `config` 段**：只更新配置项（开关、API Key 等），分类和提示词不变
+- **含 `categories` 段**：替换全部分类列表
+- **含 `prompts` 段**：替换全部提示词列表
+- **三段都有**：完整恢复整个配置
+
+> ⚠️ **安全提醒**：JSON 文件包含所有 API Key 和密钥，请勿公开分享或上传到公共仓库。建议使用「复制 Markdown（脱敏）」来分享配置用于问题排查。
+
+---
+
 ## 7. 启动方式一：纯本地开发模式
 
 > 适合：想修改代码、热重载调试、不使用 Docker
