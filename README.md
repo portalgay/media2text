@@ -462,42 +462,46 @@ cp .env.example .env   # macOS/Linux
 
 ```bash
 # ── Redis ─────────────────────────────────────────────────────
-# Redis 连接地址
-# 本地开发时（Redis 在本机或 Docker 映射到本机）：
-REDIS_URL=redis://127.0.0.1:6379/0
-# Docker 全栈模式时（后端和 Redis 都在 Docker 网络里）：
-# REDIS_URL=redis://redis:6379/0  ← docker-compose 会自动注入
+# Redis 连接地址（支持变量引用）
+REDIS_HOST=127.0.0.1
+REDIS_DB_PORT=6379
+REDIS_URL="redis://${REDIS_HOST}:${REDIS_DB_PORT}/0"
 
-# ── 数据库 ────────────────────────────────────────────────────
-# 选择数据库引擎（sqlite 或 supabase），默认 sqlite
-# 注意：这里只是初始默认值，实际以 Redis 中保存的配置为准
-DB_ENGINE=sqlite
+# Docker Compose 端口映射（可选，修改时调整）
+REDIS_PUBLISH_PORT=6379
+BACKEND_PORT=8000
+FRONTEND_PORT=3000
 
-# SQLite 文件路径（DB_ENGINE=sqlite 时生效）
-SQLITE_PATH=./media2text.db
+# ── 后端服务 ──────────────────────────────────────────────────
+APP_HOST=0.0.0.0
+APP_PORT=8000
+CORS_ORIGINS=*
 
-# Supabase 配置（DB_ENGINE=supabase 时填写）
+# ── SQLite 数据库 ────────────────────────────────────────────
+# 数据库目录和文件名（推荐放在 localdata 下便于管理）
+SQLITE_DATA_DIR=./localdata/sqlite_data
+SQLITE_FILENAME=media2text.db
+# 完整路径（本机 Python 直接使用）
+SQLITE_PATH="${SQLITE_DATA_DIR}/${SQLITE_FILENAME}"
+
+# Supabase 配置（如使用 Supabase 替代 SQLite，在页面设置中填写）
 # SUPABASE_URL=https://xxxxxxxxxxxx.supabase.co
 # SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xxxx
-# SUPABASE_TABLE=records
+# SUPABASE_TABLE=media2text_records
 
-# ── FunASR ────────────────────────────────────────────────────
+# ── FunASR / ModelScope ──────────────────────────────────────
+# 模型缓存目录（FunASR 模型下载位置，避免重复下载）
+MODELSCOPE_CACHE=./localdata/modelscope_cache/hub
+
 # 是否在应用启动后后台预加载 FunASR 模型（true/false）
 # true：启动后台异步加载，不阻塞服务启动
 # false：首次转写时按需加载（首次会等待约30秒）
 PRELOAD_FUNASR=false
 
-# ModelScope 模型缓存目录（FunASR 模型下载位置）
-# 默认：~/.cache/modelscope
-# 建议指定固定路径，避免重复下载：
-# MODELSCOPE_CACHE=/data/modelscope_cache
-
-# ── 本地路径 ──────────────────────────────────────────────────
-TEMP_DIR=./temp
-OUTPUT_DIR=./output
-
-# ── 跨域（开发时允许所有）────────────────────────────────────
-CORS_ORIGINS=*
+# ── 临时目录 ─────────────────────────────────────────────────
+# 上传文件和处理过程中的临时存储目录
+# 建议指定绝对路径或与 Docker Compose 挂载路径一致
+TEMP_DIR=./localdata/temp
 ```
 
 > **注意**：API Key（OSS、DashScope、Notion、飞书、Qwen 等）**不在 `.env` 里配置**，全部在页面「设置」弹窗里填写，保存到 Redis，更安全也更方便。
