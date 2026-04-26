@@ -5,6 +5,7 @@
       <div class="col left">
         <div class="surface left-block">
           <CategorySelect />
+          <FilenameCleanSection />
         </div>
         <div class="surface left-block upload-block">
           <UploadArea />
@@ -52,6 +53,7 @@ import { ref, onMounted, computed, watch, nextTick } from 'vue'
 import { message } from 'ant-design-vue'
 import TopBar from '@/components/layout/TopBar.vue'
 import CategorySelect from '@/components/middle/CategorySelect.vue'
+import FilenameCleanSection from '@/components/left/FilenameCleanSection.vue'
 import UploadArea from '@/components/left/UploadArea.vue'
 import FileList from '@/components/left/FileList.vue'
 import ConfigPanel from '@/components/middle/ConfigPanel.vue'
@@ -128,8 +130,12 @@ watch(
     () => config.summary_prompt_title,
     () => config.push_notion_enabled,
     () => config.push_feishu_enabled,
+    () => config.filename_temp_rules,
+    () => config.filename_regex_library,
+    () => config.filename_selected_regex_ids,
   ],
-  () => scheduleMainPageRedisSave()
+  () => scheduleMainPageRedisSave(),
+  { deep: true }
 )
 
 onMounted(async () => {

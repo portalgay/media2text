@@ -1,3 +1,4 @@
+<!-- 「文件名清洗 / 正则模板」在左侧 FilenameCleanSection.vue（含下拉内编辑、删除）。 -->
 <template>
   <div class="panel">
     <div class="panel-head">
@@ -163,7 +164,6 @@ import { computed, onMounted, watch, nextTick } from 'vue'
 import { message } from 'ant-design-vue'
 import { BulbOutlined } from '@ant-design/icons-vue'
 import { useConfigStore } from '@/stores/config.js'
-import * as api from '@/api/index.js'
 
 defineEmits(['add-prompt', 'manage-prompts'])
 

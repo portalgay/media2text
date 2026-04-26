@@ -45,17 +45,6 @@ def _bucket(cfg: ProcessConfig) -> oss2.Bucket:
     return oss2.Bucket(auth, ep, cfg.oss_bucket_name.strip())
 
 
-def _object_exists(bucket: oss2.Bucket, key: str) -> bool:
-    try:
-        bucket.head_object(key)
-        return True
-    except oss2.exceptions.NoSuchKey:
-        return False
-    except Exception as e:  # noqa: BLE001
-        LOG.warning("OSS head_object 异常 | key=%s | %s", key, e)
-        return False
-
-
 def _upload_file_sync(
     local_file: Path,
     content_hash8: str,
@@ -71,15 +60,7 @@ def _upload_file_sync(
     else:
         object_key = f"{cat}/captions/{h8}_{safe}_transcript.md"
     bucket = _bucket(cfg)
-    exists = _object_exists(bucket, object_key)
-    action = "覆盖上传" if exists else "新建对象"
-    LOG.info(
-        "OSS 上传 | key=%s | sha256_8=%s | 已存在=%s | 行为=%s",
-        object_key,
-        h8,
-        exists,
-        action,
-    )
+    LOG.info("OSS put | %s", object_key)
     headers: dict = {}
     if subdir == "audios":
         headers["Content-Type"] = "audio/mpeg"
@@ -119,15 +100,7 @@ def _upload_caption_sync(
     cat = category_segment(cfg.category)
     object_key = f"{cat}/captions/{h8}_{safe}_transcript.md"
     bucket = _bucket(cfg)
-    exists = _object_exists(bucket, object_key)
-    action = "覆盖上传" if exists else "新建对象"
-    LOG.info(
-        "OSS 字幕上传 | key=%s | sha256_8(文本)=%s | 已存在=%s | 行为=%s",
-        object_key,
-        h8,
-        exists,
-        action,
-    )
+    LOG.info("OSS put caption | %s", object_key)
     data = markdown_text.encode("utf-8")
     bucket.put_object(
         object_key,

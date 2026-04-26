@@ -37,6 +37,12 @@
             <a-tag :color="it.status === 'success' ? 'success' : 'error'">
               {{ it.status === 'success' ? '成功' : '失败' }}
             </a-tag>
+            <a-tag
+              :color="getRecTypeColor(it.recognition_type)"
+              :class="{ 'rec-tag-untranscribed': isUntranscribed(it.recognition_type) }"
+            >
+              {{ getRecTypeLabel(it.recognition_type) }}
+            </a-tag>
             <span class="t-title">{{ it.title }}</span>
             <span class="wc">{{ (it.captions || '').length }} 字</span>
           </span>
@@ -116,6 +122,33 @@ function selectedPayload() {
 
 function isSelected(idx) {
   return selectedIdx.value.includes(idx)
+}
+
+function isUntranscribed(type) {
+  const x = (type || '').trim()
+  return x === 'untranscribed' || x === 'unrecognized'
+}
+
+function getRecTypeLabel(type) {
+  const x = (type || '').trim()
+  if (x === 'untranscribed' || x === 'unrecognized') return '未转写'
+  const map = {
+    funasr: 'FunASR',
+    dashscope: '百炼API',
+    subtitle: '内嵌字幕'
+  }
+  return map[x] || x || '未转写'
+}
+
+function getRecTypeColor(type) {
+  const x = (type || '').trim()
+  if (x === 'untranscribed' || x === 'unrecognized' || !x) return 'default'
+  const map = {
+    funasr: 'blue',
+    dashscope: 'purple',
+    subtitle: 'green'
+  }
+  return map[x] || 'default'
 }
 
 function links(it) {
@@ -256,5 +289,11 @@ function clear() {
 }
 .links a {
   color: #6366f1;
+}
+.rec-tag-untranscribed {
+  font-weight: 500;
+  border-color: #d9d9d9 !important;
+  color: rgba(0, 0, 0, 0.65) !important;
+  background: #fafafa !important;
 }
 </style>

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from core import redis_client as R
 from core.logger import get_logger, log_error, log_timing
 from models.schemas import ProcessConfig
 from services.integration_payload import integration_dict_from_row, row_datetime_to_iso_utc_z
@@ -120,11 +121,22 @@ async def push_items_to_notion(
         for it in items:
             props = notion_props_from_integration(dict(it))
             ru = str(it.get("record_uuid") or "").strip()
+            db_row_id = it.get("record_id")
             page_id: Optional[str] = None
             if ru:
-                page_id = await _query_page_id_by_uuid(
-                    client, db_id=db_id, record_uuid=ru, headers=headers, trace_id=trace_id
-                )
+                try:
+                    cached = await R.push_cache_get(ru)
+                except Exception as ex:
+                    cached = None
+                    log_error(LOG, trace_id, "push_cache_get_notion", ex)
+                if cached:
+                    pid = str(cached.get("notion_page_id") or "").strip()
+                    if pid:
+                        page_id = pid
+                if not page_id:
+                    page_id = await _query_page_id_by_uuid(
+                        client, db_id=db_id, record_uuid=ru, headers=headers, trace_id=trace_id
+                    )
 
             try:
                 if page_id:
@@ -132,9 +144,11 @@ async def push_items_to_notion(
                     r = await client.patch(
                         patch_url, headers=headers, json={"properties": props}
                     )
+                    resolved_page_id = page_id
                 else:
                     body = {"parent": {"database_id": db_id}, "properties": props}
                     r = await client.post(_PAGES, headers=headers, json=body)
+                    resolved_page_id = None
             except httpx.RequestError as e:
                 raise ValueError(
                     "无法连接到 api.notion.com（网络或代理）。"
@@ -146,3 +160,19 @@ async def push_items_to_notion(
                 if r.status_code < 500:
                     raise ValueError(msg)
                 raise RuntimeError(msg)
+
+            if not resolved_page_id:
+                try:
+                    created = r.json()
+                    resolved_page_id = str(created.get("id") or "").strip() or None
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    resolved_page_id = None
+
+            if ru and resolved_page_id:
+                merge: Dict[str, Any] = {"notion_page_id": resolved_page_id}
+                if db_row_id is not None:
+                    merge["db_id"] = db_row_id
+                try:
+                    await R.push_cache_set_merged(ru, merge)
+                except Exception as ex:
+                    log_error(LOG, trace_id, "push_cache_set_notion", ex)

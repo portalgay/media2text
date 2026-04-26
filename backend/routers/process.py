@@ -2,6 +2,7 @@
 """批量处理与 SSE 进度"""
 
 import asyncio
+import hashlib
 import json
 import shutil
 import time
@@ -27,7 +28,7 @@ from services import asr_dashscope, asr_local, db
 from services.integration_payload import integration_dict_from_row
 from services.file_detector import detect_file_type
 from services.file_hash import sha256_bytes_prefix8, sha256_file_prefix8
-from services.filename_clean import clean_file_stem, safe_display_stem
+from services.filename_clean import clean_file_stem_from_config, safe_display_stem
 from services.markdown_formatter import format_merged, format_single
 from services.oss_uploader import category_segment, upload_caption_to_oss, upload_to_oss
 from services.subtitle_extract import try_extract_embedded_subtitle_plain
@@ -42,6 +43,31 @@ router = APIRouter(prefix="/process", tags=["process"])
 LOG = get_logger("process")
 
 TASKS: Dict[str, Dict[str, Any]] = {}
+
+
+def _deterministic_record_uuid_separate(content_hash8: str, cleaned_stem: str) -> str:
+    """非合并：MD5(单文件 SHA256 前 8 位 + 清洗后主名) → 32 位 hex。"""
+    h8 = (content_hash8 or "").lower()[:8]
+    stem = (cleaned_stem or "").strip()
+    body = f"{h8}{stem}".encode("utf-8")
+    return hashlib.md5(body, usedforsecurity=False).hexdigest()
+
+
+def _deterministic_record_uuid_merge(
+    fingerprints: List[Tuple[str, str]], merge_title: str
+) -> str:
+    """
+    合并：各文件 (原始文件名, hash8) 按文件名排序后拼接 hash8，再追加合并标题，MD5 → 32 位 hex。
+    返回的字符串前 8 位可作为「组合 Hash」用于合并字幕 OSS/本地路径。
+    """
+    title = (merge_title or "").strip()
+    if not fingerprints:
+        body = title.encode("utf-8")
+    else:
+        sorted_fp = sorted(fingerprints, key=lambda x: (x[0] or ""))
+        blob = "".join((h or "").lower()[:8] for _, h in sorted_fp) + title
+        body = blob.encode("utf-8")
+    return hashlib.md5(body, usedforsecurity=False).hexdigest()
 
 
 def _temp_root() -> Path:
@@ -184,9 +210,14 @@ async def _save_db(
             "transcript_on_oss": to,
             "has_summary": hs,
             "record_uuid": ru,
-            "recognition_type": (pr.recognition_type or "funasr"),
+            "recognition_type": pr.recognition_type,
         }
     )
+    if ru:
+        try:
+            await R.push_cache_set_merged(ru, {"db_id": rid})
+        except Exception as ex:
+            log_error(LOG, task_id[:8], "push_cache_set", ex)
     return rid, uuid_out
 
 
@@ -208,11 +239,13 @@ def _validate_cfg(cfg: ProcessConfig) -> None:
 
 def _merge_recognition_type(types: List[str]) -> str:
     if not types:
-        return "funasr"
+        return "untranscribed"
     if all(t == "subtitle" for t in types):
         return "subtitle"
     if any(t == "dashscope" for t in types):
         return "dashscope"
+    if all(t == "untranscribed" for t in types):
+        return "untranscribed"
     return "funasr"
 
 
@@ -227,6 +260,7 @@ async def _run_pipeline(
     merge_pairs: List[tuple[str, str]] = []
     merge_sources: List[SourceFile] = []
     merge_recs: List[str] = []
+    merge_fingerprints: List[Tuple[str, str]] = []
 
     for i, fi in enumerate(files):
         raw_name = fi.filename
@@ -243,7 +277,7 @@ async def _run_pipeline(
         try:
             src = _resolve_temp_path(fi.temp_path)
             src_hash8 = await asyncio.to_thread(sha256_file_prefix8, src)
-            stem_base = clean_file_stem(raw_name, cfg.filename_clean_regex, trace_id=trace_id)
+            stem_base = clean_file_stem_from_config(raw_name, cfg, trace_id=trace_id)
             stem_safe = safe_display_stem(stem_base)
             ext = Path(raw_name).suffix
             file_label = f"{stem_safe}{ext}"
@@ -424,7 +458,12 @@ async def _run_pipeline(
                     )
                 markdown_text = format_single(file_label, transcript or "")
 
-            if cfg.transcribe_enabled and transcript and cfg.transcript_save_local:
+            if (
+                cfg.transcribe_enabled
+                and transcript
+                and cfg.transcript_save_local
+                and cfg.batch_mode != "merge"
+            ):
                 await _push(
                     queue,
                     task_id,
@@ -444,7 +483,12 @@ async def _run_pipeline(
                     stem_safe,
                 )
 
-            if cfg.transcribe_enabled and transcript and cfg.transcript_save_oss:
+            if (
+                cfg.transcribe_enabled
+                and transcript
+                and cfg.transcript_save_oss
+                and cfg.batch_mode != "merge"
+            ):
                 await _push(
                     queue,
                     task_id,
@@ -473,6 +517,10 @@ async def _run_pipeline(
                 caption_oss_url=caption_oss_url,
             )
 
+            # 未开启转写：与「未能识别出内容」区分，单独标记为未转写
+            if not cfg.transcribe_enabled:
+                rec_type = "untranscribed"
+
             summary: Optional[str] = None
             if (
                 cfg.transcribe_enabled
@@ -494,6 +542,15 @@ async def _run_pipeline(
                 summary = await summ.summarize(transcript, prompt_content, trace_id)
 
             if cfg.batch_mode == "separate":
+                det_ru = _deterministic_record_uuid_separate(src_hash8, stem_safe)
+                log_step(
+                    LOG,
+                    trace_id,
+                    "record_uuid",
+                    "确定性 UUID",
+                    record_uuid=det_ru[:8] + "...",
+                    mode="separate",
+                )
                 pr = ProcessResult(
                     title=stem_safe,
                     source_files=[sf],
@@ -501,6 +558,7 @@ async def _run_pipeline(
                     summary=summary,
                     status="success",
                     recognition_type=rec_type,
+                    record_uuid=det_ru,
                 )
                 saved = await _save_db(task_id, cfg, pr)
                 if saved is not None:
@@ -509,6 +567,7 @@ async def _run_pipeline(
                 results.append(pr)
 
             else:
+                merge_fingerprints.append((raw_name, src_hash8))
                 if cfg.transcribe_enabled and transcript:
                     merge_pairs.append((file_label, transcript))
                     merge_recs.append(rec_type)
@@ -546,30 +605,98 @@ async def _run_pipeline(
                     )
                 )
 
-    if cfg.batch_mode == "merge" and merge_pairs:
-        merged_captions = format_merged(merge_pairs)
+    if cfg.batch_mode == "merge" and merge_sources:
+        merge_title_display = (cfg.merge_title or "").strip() or "合并结果"
+        det_ru = _deterministic_record_uuid_merge(merge_fingerprints, merge_title_display)
+        combo_h8 = det_ru[:8]
+        merge_stem = safe_display_stem(merge_title_display)
+        log_step(
+            LOG,
+            trace_id,
+            "record_uuid",
+            "确定性 UUID（合并）",
+            record_uuid=det_ru[:8] + "...",
+            combo_hash8=combo_h8,
+        )
+
+        merged_captions: Optional[str] = None
         summary: Optional[str] = None
-        if cfg.summary_enabled:
-            await _push(
-                queue,
-                task_id,
-                0,
-                cfg.merge_title or "合并",
-                "summarizing",
-                "AI总结中（合并）...",
-                88,
+        merged_cap_local: Optional[str] = None
+        merged_cap_oss: Optional[str] = None
+
+        if merge_pairs:
+            merged_captions = format_merged(merge_pairs)
+            if cfg.summary_enabled:
+                await _push(
+                    queue,
+                    task_id,
+                    0,
+                    merge_title_display,
+                    "summarizing",
+                    "AI总结中（合并）...",
+                    88,
+                )
+                prompt_content = await R.get_prompt_content(cfg.summary_prompt_title)
+                summ = get_summarizer(cfg.summary_model, cfg.qwen_api_key)
+                summary = await summ.summarize(merged_captions, prompt_content, trace_id)
+
+            if cfg.transcript_save_local:
+                await _push(
+                    queue,
+                    task_id,
+                    0,
+                    merge_title_display,
+                    "saving",
+                    "保存合并字幕到本地...",
+                    90,
+                )
+                merged_cap_local = await _save_caption_local(
+                    merged_captions,
+                    cfg,
+                    combo_h8,
+                    merge_stem,
+                )
+            if cfg.transcript_save_oss:
+                await _push(
+                    queue,
+                    task_id,
+                    0,
+                    merge_title_display,
+                    "uploading_oss",
+                    "上传合并字幕到OSS...",
+                    92,
+                )
+                merged_cap_oss = await upload_caption_to_oss(
+                    merged_captions,
+                    combo_h8,
+                    merge_stem,
+                    cfg,
+                )
+
+        rec_merged = _merge_recognition_type(merge_recs)
+        if not cfg.transcribe_enabled:
+            rec_merged = "untranscribed"
+
+        mfs: List[SourceFile] = list(merge_sources)
+        if mfs and (merged_cap_local or merged_cap_oss):
+            u0 = mfs[0]
+            mfs[0] = SourceFile(
+                filename=u0.filename,
+                original_filename=u0.original_filename,
+                audio_local_path=u0.audio_local_path,
+                audio_oss_url=u0.audio_oss_url,
+                caption_local_path=merged_cap_local or u0.caption_local_path,
+                caption_oss_url=merged_cap_oss or u0.caption_oss_url,
             )
-            prompt_content = await R.get_prompt_content(cfg.summary_prompt_title)
-            summ = get_summarizer(cfg.summary_model, cfg.qwen_api_key)
-            summary = await summ.summarize(merged_captions, prompt_content, trace_id)
 
         pr = ProcessResult(
-            title=(cfg.merge_title or "").strip() or "合并结果",
-            source_files=merge_sources,
+            title=merge_title_display,
+            source_files=mfs,
             captions=merged_captions,
             summary=summary,
             status="success",
-            recognition_type=_merge_recognition_type(merge_recs),
+            recognition_type=rec_merged,
+            record_uuid=det_ru,
         )
         saved = await _save_db(task_id, cfg, pr)
         if saved is not None:

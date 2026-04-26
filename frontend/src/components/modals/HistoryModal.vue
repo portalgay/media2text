@@ -30,7 +30,17 @@
           </a-tooltip>
         </template>
         <template v-else-if="column.key === 'rec_type'">
-          <a-tag :color="recColor(record.recognition_type)">{{ recLabel(record.recognition_type) }}</a-tag>
+          <a-button
+            v-if="needsTranscribe(record)"
+            type="link"
+            size="small"
+            class="link-transcribe"
+            :loading="busy[`${record.id}_asr`]"
+            @click="onTranscribe(record)"
+          >
+            转写
+          </a-button>
+          <a-tag v-else :color="recColor(record.recognition_type)">{{ recLabel(record.recognition_type) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'title'">
           <a-tooltip :title="tipText(record.title)">
@@ -261,22 +271,22 @@ const rowSelection = computed(() => ({
 }))
 
 const columns = [
-  { title: 'ID', dataIndex: 'id', key: 'id', width: 52 },
-  { title: 'UUID', key: 'uuid', width: 96 },
-  { title: '时间', dataIndex: 'created_at', key: 'created_at', width: 142 },
-  { title: '更新时间', dataIndex: 'updated_at', key: 'updated_at', width: 158 },
-  { title: '分类', dataIndex: 'category', key: 'category', width: 88 },
-  { title: '识别类型', key: 'rec_type', width: 100 },
-  { title: '标题', key: 'title', ellipsis: true, width: 160 },
-  { title: '原文预览', key: 'cap_prev', width: 120 },
-  { title: '总结预览', key: 'sum_prev', width: 120 },
-  { title: '模式', key: 'mode', width: 84 },
-  { title: '状态', dataIndex: 'status', key: 'status', width: 72 },
-  { title: '文本OSS', key: 'oss_txt', width: 168, fixed: 'right' },
-  { title: 'AI总结', key: 'ai_sum', width: 176, fixed: 'right' },
-  { title: 'Notion', key: 'notion', width: 168, fixed: 'right' },
-  { title: '飞书', key: 'feishu', width: 168, fixed: 'right' },
-  { title: '操作', key: 'action', width: 200, fixed: 'right' },
+  { title: 'ID', dataIndex: 'id', key: 'id', width: 50 },
+  { title: 'UUID', key: 'uuid', width: 80 },
+  { title: '时间', dataIndex: 'created_at', key: 'created_at', width: 135 },
+  { title: '更新时间', dataIndex: 'updated_at', key: 'updated_at', width: 150 },
+  { title: '分类', dataIndex: 'category', key: 'category', width: 70 },
+  { title: '标题', key: 'title', ellipsis: true, width: 140 },
+  { title: '原文预览', key: 'cap_prev', width: 100 },
+  { title: '总结预览', key: 'sum_prev', width: 100 },
+  { title: '模式', key: 'mode', width: 70 },
+  { title: '状态', dataIndex: 'status', key: 'status', width: 60 },
+  { title: '识别类型', key: 'rec_type', width: 78, fixed: 'right' },
+  { title: '文本OSS', key: 'oss_txt', width: 120, fixed: 'right' },
+  { title: 'AI总结', key: 'ai_sum', width: 120, fixed: 'right' },
+  { title: 'Notion', key: 'notion', width: 110, fixed: 'right' },
+  { title: '飞书', key: 'feishu', width: 110, fixed: 'right' },
+  { title: '操作', key: 'action', width: 160, fixed: 'right' },
 ]
 
 function uuidShort(u) {
@@ -301,18 +311,27 @@ function modeText(r) {
   return r.batch_mode_display || r.batch_mode || ''
 }
 
+function needsTranscribe(r) {
+  const x = (r.recognition_type || '').trim()
+  return !x || x === 'untranscribed' || x === 'unrecognized'
+}
+
 function recLabel(t) {
-  const x = t || 'funasr'
+  const x = (t || '').trim()
   if (x === 'subtitle') return '字幕'
   if (x === 'dashscope') return '百炼API'
-  return '本地FunASR'
+  if (x === 'funasr') return '本地FunASR'
+  if (x === 'untranscribed' || x === 'unrecognized') return '未转写'
+  if (!x) return '未转写'
+  return x
 }
 
 function recColor(t) {
-  const x = t || 'funasr'
+  const x = (t || '').trim()
   if (x === 'subtitle') return 'success'
   if (x === 'dashscope') return 'orange'
-  return 'geekblue'
+  if (x === 'funasr') return 'geekblue'
+  return 'default'
 }
 
 function ossOk(r) {
@@ -448,6 +467,20 @@ async function onSummarize(record) {
     message.error(e?.response?.data?.detail || e.message || String(e))
   } finally {
     busy[`${record.id}_sum`] = false
+  }
+}
+
+async function onTranscribe(record) {
+  busy[`${record.id}_asr`] = true
+  try {
+    const { record: row } = await api.historyTranscribe(record.id)
+    patchRecord(row)
+    message.success('转写完成')
+    if (detail.value && sameRecordId(detail.value.id, row.id)) detail.value = row
+  } catch (e) {
+    message.error(e?.response?.data?.detail || e.message || String(e))
+  } finally {
+    busy[`${record.id}_asr`] = false
   }
 }
 
@@ -703,6 +736,12 @@ function clearAll() {
 }
 .sep {
   color: rgba(0, 0, 0, 0.25);
+}
+.link-transcribe {
+  padding: 0;
+  height: auto;
+  font-weight: 500;
+  color: #1677ff;
 }
 .detail-tabs {
   margin-top: 4px;

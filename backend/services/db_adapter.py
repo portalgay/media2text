@@ -36,8 +36,9 @@ class BaseDBAdapter(ABC):
         *,
         captions: Optional[str] = None,
         summary: Optional[str] = None,
+        recognition_type: Optional[str] = None,
     ) -> None:
-        """更新原文/总结；未传入的字段不改。任意字段变更会刷新 updated_at。"""
+        """更新原文/总结/识别类型；未传入的字段不改。任意字段变更会刷新 updated_at。"""
 
     @abstractmethod
     async def get_records(self, page: int = 1, page_size: int = 20) -> dict:
@@ -60,6 +61,14 @@ class BaseDBAdapter(ABC):
         feishu: bool = False,
     ) -> None:
         ...
+
+    @abstractmethod
+    async def fetch_record_uuids_by_ids(self, ids: Sequence[int]) -> List[str]:
+        """供删除前失效 Redis；返回非空 record_uuid，已去重。"""
+
+    @abstractmethod
+    async def fetch_all_record_uuids(self) -> List[str]:
+        """清空表前取全部非空 record_uuid，已去重。"""
 
     @abstractmethod
     async def delete_record(self, record_id: int) -> None:

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from core import redis_client as R
 from core.logger import get_logger, log_error, log_timing
 from models.schemas import ProcessConfig
 from services.integration_payload import row_datetime_to_ms_utc
@@ -196,6 +197,14 @@ async def _search_record_id(
     return str(items[0].get("record_id") or "")
 
 
+def _record_id_from_batch_create(data: Dict[str, Any]) -> Optional[str]:
+    recs = (data.get("data") or {}).get("records") or []
+    if not recs:
+        return None
+    rid = str((recs[0] or {}).get("record_id") or "").strip()
+    return rid or None
+
+
 async def push_items_to_feishu(
     items: List[Dict[str, Any]],
     cfg: ProcessConfig,
@@ -223,16 +232,27 @@ async def push_items_to_feishu(
         for it in items:
             fields = feishu_fields_from_integration(dict(it))
             ru = str(it.get("record_uuid") or "").strip()
+            db_row_id = it.get("record_id")
             existing_id: Optional[str] = None
             if ru:
-                existing_id = await _search_record_id(
-                    client,
-                    app_token=app_token,
-                    table_id=table_id,
-                    record_uuid=ru,
-                    tenant_token=tenant_token,
-                    trace_id=trace_id,
-                )
+                try:
+                    cached = await R.push_cache_get(ru)
+                except Exception as ex:
+                    cached = None
+                    log_error(LOG, trace_id, "push_cache_get_feishu", ex)
+                if cached:
+                    cid = str(cached.get("feishu_record_id") or "").strip()
+                    if cid:
+                        existing_id = cid
+                if not existing_id:
+                    existing_id = await _search_record_id(
+                        client,
+                        app_token=app_token,
+                        table_id=table_id,
+                        record_uuid=ru,
+                        tenant_token=tenant_token,
+                        trace_id=trace_id,
+                    )
 
             if existing_id:
                 up_url = (
@@ -242,6 +262,7 @@ async def push_items_to_feishu(
                 t0 = time.time()
                 r = await client.put(up_url, headers=headers, json={"fields": fields})
                 log_timing(LOG, trace_id, "feishu_record_put", time.time() - t0)
+                final_record_id: Optional[str] = existing_id
             else:
                 cr_url = (
                     f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/"
@@ -252,6 +273,7 @@ async def push_items_to_feishu(
                     cr_url, headers=headers, json={"records": [{"fields": fields}]}
                 )
                 log_timing(LOG, trace_id, "feishu_batch_create", time.time() - t0)
+                final_record_id = None
 
             body_summary = _summarize_feishu_error(r.text)
             if r.status_code >= 400:
@@ -271,3 +293,15 @@ async def push_items_to_feishu(
                 raise RuntimeError(f"飞书响应非 JSON: {r.text[:500]}") from None
             if data.get("code") != 0:
                 raise RuntimeError(f"飞书写入失败: {data}")
+
+            if not final_record_id:
+                final_record_id = _record_id_from_batch_create(data)
+
+            if ru and final_record_id:
+                merge: Dict[str, Any] = {"feishu_record_id": final_record_id}
+                if db_row_id is not None:
+                    merge["db_id"] = db_row_id
+                try:
+                    await R.push_cache_set_merged(ru, merge)
+                except Exception as ex:
+                    log_error(LOG, trace_id, "push_cache_set_feishu", ex)

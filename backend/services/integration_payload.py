@@ -123,14 +123,18 @@ def integration_dict_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     bm = normalize_batch_mode_display(row.get("batch_mode"))
     created = row_datetime_to_iso_utc_z(row.get("created_at"))
     updated = row_datetime_to_iso_utc_z(row.get("updated_at") or row.get("created_at"))
+    rt = row.get("recognition_type")
+    rt_s = str(rt).strip() if rt is not None else ""
     return {
+        "record_id": row.get("id"),
         "record_uuid": str(row.get("record_uuid") or ""),
         "created_at": created,
         "updated_at": updated,
         "title": str(row.get("title") or ""),
         "category": str(row.get("category") or ""),
         "batch_mode": bm,
-        "recognition_type": str(row.get("recognition_type") or "funasr"),
+        "recognition_type": (rt_s if rt_s != "unrecognized" else "untranscribed")
+        or "untranscribed",
         "captions": row.get("captions") or "",
         "summary": row.get("summary") or "",
         "source_files": json.dumps(sfs, ensure_ascii=False),

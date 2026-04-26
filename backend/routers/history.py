@@ -14,6 +14,7 @@ from services.history_ops import (
     push_record_feishu,
     push_record_notion,
     summarize_record,
+    transcribe_record,
     upload_caption_oss_record,
 )
 
@@ -105,6 +106,17 @@ async def update_history_record(record_id: int, body: UpdateHistoryBody):
     if not row:
         raise HTTPException(status_code=404, detail="记录不存在")
     return {"ok": True, "record": row}
+
+
+@router.post("/history/{record_id}/transcribe")
+async def history_transcribe(record_id: int):
+    try:
+        row = await transcribe_record(record_id)
+        return {"ok": True, "record": row}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 @router.post("/history/{record_id}/summarize")

@@ -91,6 +91,10 @@ class SQLiteAdapter(BaseDBAdapter):
 
         await self._migrate_batch_mode_values(db)
 
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_record_uuid ON records(record_uuid)"
+        )
+
         cur2 = await db.execute("PRAGMA table_info(records)")
         cols2 = {row[1] for row in await cur2.fetchall()}
         if "updated_at" in cols2:
@@ -142,16 +146,68 @@ class SQLiteAdapter(BaseDBAdapter):
         d["summarized"] = d.get("has_summary", False)
         d["pushed_notion"] = d.get("notion_pushed", False)
         d["pushed_feishu"] = d.get("feishu_pushed", False)
-        d["recognition_type"] = d.get("recognition_type") or "funasr"
+        rt = d.get("recognition_type")
+        rs = (str(rt).strip() if rt is not None else "") or "untranscribed"
+        if rs == "unrecognized":
+            rs = "untranscribed"
+        d["recognition_type"] = rs
         bm = d.get("batch_mode")
         d["batch_mode_display"] = normalize_batch_mode_display(bm)
         return d
 
+    def _norm_recognition_type(self, record: Dict[str, Any]) -> str:
+        rt = record.get("recognition_type")
+        if rt is None:
+            return "untranscribed"
+        s = str(rt).strip()[:32]
+        if not s:
+            return "untranscribed"
+        if s == "unrecognized":
+            return "untranscribed"
+        return s
+
     async def save_record(self, record: Dict[str, Any]) -> Tuple[int, str]:
         ru = (record.get("record_uuid") or "").strip() or uuid.uuid4().hex
         bm = normalize_batch_mode_db(record.get("batch_mode"))
+        rts = self._norm_recognition_type(record)
         async with aiosqlite.connect(self._db_path) as db:
             cur = await db.execute(
+                "SELECT id FROM records WHERE record_uuid = ? LIMIT 1", (ru,)
+            )
+            existing = await cur.fetchone()
+            uts = _utc_now_str()
+            if existing:
+                rid = int(existing[0])
+                await db.execute(
+                    """
+                    UPDATE records SET
+                        task_id = ?, category = ?, batch_mode = ?, title = ?, source_files = ?,
+                        captions = ?, summary = ?, status = ?,
+                        transcript_on_oss = ?, has_summary = ?,
+                        record_uuid = ?, recognition_type = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        record.get("task_id", ""),
+                        record.get("category", "默认分类"),
+                        bm,
+                        record.get("title", ""),
+                        json.dumps(record.get("source_files", []), ensure_ascii=False),
+                        record.get("captions"),
+                        record.get("summary"),
+                        record.get("status", "success"),
+                        1 if record.get("transcript_on_oss") else 0,
+                        1 if record.get("has_summary") else 0,
+                        ru,
+                        rts,
+                        uts,
+                        rid,
+                    ),
+                )
+                await db.commit()
+                return rid, ru
+
+            cur2 = await db.execute(
                 """
                 INSERT INTO records (
                     task_id, category, batch_mode, title, source_files, captions, summary, status,
@@ -172,11 +228,11 @@ class SQLiteAdapter(BaseDBAdapter):
                     0,
                     0,
                     ru,
-                    (record.get("recognition_type") or "funasr")[:32],
+                    rts,
                 ),
             )
             await db.commit()
-            rid = int(cur.lastrowid)
+            rid = int(cur2.lastrowid)
             return rid, ru
 
     async def update_record_summary(self, record_id: int, summary: str, has_summary: bool = True) -> None:
@@ -217,8 +273,9 @@ class SQLiteAdapter(BaseDBAdapter):
         *,
         captions: Optional[str] = None,
         summary: Optional[str] = None,
+        recognition_type: Optional[str] = None,
     ) -> None:
-        if captions is None and summary is None:
+        if captions is None and summary is None and recognition_type is None:
             return
         sets: List[str] = []
         vals: List[Any] = []
@@ -230,6 +287,9 @@ class SQLiteAdapter(BaseDBAdapter):
             vals.append(summary)
             sets.append("has_summary = ?")
             vals.append(1 if str(summary).strip() else 0)
+        if recognition_type is not None:
+            sets.append("recognition_type = ?")
+            vals.append(recognition_type)
         sets.append("updated_at = ?")
         vals.append(_utc_now_str())
         vals.append(record_id)
@@ -331,12 +391,7 @@ class SQLiteAdapter(BaseDBAdapter):
                 )
             await db.commit()
 
-    async def delete_record(self, record_id: int) -> None:
-        async with aiosqlite.connect(self._db_path) as db:
-            await db.execute("DELETE FROM records WHERE id = ?", (record_id,))
-            await db.commit()
-
-    async def delete_records(self, ids: Sequence[int]) -> int:
+    def _clean_positive_ids(self, ids: Sequence[int]) -> List[int]:
         clean: List[int] = []
         for x in ids:
             try:
@@ -345,6 +400,41 @@ class SQLiteAdapter(BaseDBAdapter):
                     clean.append(xi)
             except (TypeError, ValueError):
                 continue
+        return clean
+
+    async def fetch_record_uuids_by_ids(self, ids: Sequence[int]) -> List[str]:
+        clean = self._clean_positive_ids(ids)
+        if not clean:
+            return []
+        placeholders = ",".join("?" * len(clean))
+        q = (
+            f"SELECT DISTINCT record_uuid FROM records WHERE id IN ({placeholders}) "
+            "AND record_uuid IS NOT NULL AND TRIM(record_uuid) != ''"
+        )
+        async with aiosqlite.connect(self._db_path) as db:
+            cur = await db.execute(q, clean)
+            rows = await cur.fetchall()
+        out = {str(r[0]).strip() for r in rows if r and r[0]}
+        return sorted(out)
+
+    async def fetch_all_record_uuids(self) -> List[str]:
+        q = (
+            "SELECT DISTINCT record_uuid FROM records "
+            "WHERE record_uuid IS NOT NULL AND TRIM(record_uuid) != ''"
+        )
+        async with aiosqlite.connect(self._db_path) as db:
+            cur = await db.execute(q)
+            rows = await cur.fetchall()
+        out = {str(r[0]).strip() for r in rows if r and r[0]}
+        return sorted(out)
+
+    async def delete_record(self, record_id: int) -> None:
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("DELETE FROM records WHERE id = ?", (record_id,))
+            await db.commit()
+
+    async def delete_records(self, ids: Sequence[int]) -> int:
+        clean = self._clean_positive_ids(ids)
         if not clean:
             return 0
         placeholders = ",".join("?" * len(clean))

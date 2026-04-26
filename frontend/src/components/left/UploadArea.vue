@@ -58,23 +58,26 @@ watch(
   box-shadow: 0 8px 24px rgba(99, 102, 241, 0.12);
 }
 .dragger :deep(.ant-upload) {
-  padding: 20px 16px 18px;
+  padding: 8px 12px 6px;
 }
 .dragger :deep(.ant-upload-drag-icon) {
-  margin-bottom: 8px;
+  margin-bottom: 2px;
 }
 .dragger :deep(.ant-upload-drag-icon .anticon) {
   color: #6366f1;
-  font-size: 40px;
+  font-size: 22px;
 }
 .dragger :deep(.ant-upload-text) {
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
   color: rgba(0, 0, 0, 0.78);
-  margin-bottom: 4px;
+  margin-bottom: 0;
+  line-height: 1.3;
 }
 .dragger :deep(.ant-upload-hint) {
-  font-size: 12px;
+  font-size: 11px;
   color: rgba(0, 0, 0, 0.45);
+  margin-top: 2px;
+  line-height: 1.3;
 }
 </style>

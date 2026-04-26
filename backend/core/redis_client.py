@@ -2,7 +2,7 @@
 """Redis 异步客户端与配置 / 分类 / 提示词存取"""
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import redis.asyncio as redis
 
@@ -12,6 +12,9 @@ from models.schemas import DEFAULT_CONFIG_DICT, DEFAULT_PROMPTS_DICT
 CONFIG_HASH_KEY = "media2text:config"
 CATEGORIES_SET_KEY = "media2text:categories"
 PROMPTS_HASH_KEY = "media2text:prompts"
+# 第三方推送防抖：record_uuid -> { db_id, notion_page_id, feishu_record_id }
+PUSH_CACHE_PREFIX = "media2text:push:"
+PUSH_CACHE_TTL_SEC = 300
 
 _redis: Optional[redis.Redis] = None
 
@@ -85,7 +88,24 @@ async def reset_all_to_defaults() -> None:
 def _to_redis_str(v: Any) -> str:
     if isinstance(v, bool):
         return "true" if v else "false"
+    if isinstance(v, (list, dict)):
+        return json.dumps(v, ensure_ascii=False)
     return str(v)
+
+
+def _coerce_config_value(key: str, raw_val: str, default: Any) -> Any:
+    """将 Redis 字符串还原为与 DEFAULT_CONFIG_DICT 一致的 Python 类型。"""
+    if isinstance(default, bool):
+        return _bool_from_str(raw_val)
+    if isinstance(default, list):
+        if raw_val is None or raw_val == "":
+            return list(default)
+        try:
+            parsed = json.loads(raw_val)
+            return parsed if isinstance(parsed, list) else list(default)
+        except (json.JSONDecodeError, TypeError):
+            return list(default)
+    return raw_val
 
 
 async def get_config() -> dict:
@@ -97,11 +117,7 @@ async def get_config() -> dict:
     out: Dict[str, Any] = {}
     for k, v in raw.items():
         if k in DEFAULT_CONFIG_DICT:
-            dv = DEFAULT_CONFIG_DICT[k]
-            if isinstance(dv, bool):
-                out[k] = _bool_from_str(v)
-            else:
-                out[k] = v
+            out[k] = _coerce_config_value(k, v, DEFAULT_CONFIG_DICT[k])
         else:
             out[k] = v
     for k, dv in DEFAULT_CONFIG_DICT.items():
@@ -117,6 +133,72 @@ async def update_config(data: dict) -> None:
         return
     flat = {k: _to_redis_str(v) for k, v in data.items()}
     await r.hset(CONFIG_HASH_KEY, mapping=flat)
+
+
+async def push_cache_get(record_uuid: str) -> Optional[Dict[str, Any]]:
+    """读取推送缓存（Notion page_id / 飞书 record_id 等）。"""
+    ru = (record_uuid or "").strip()
+    if not ru:
+        return None
+    r = await get_redis()
+    raw = await r.get(PUSH_CACHE_PREFIX + ru)
+    if not raw:
+        return None
+    try:
+        out = json.loads(raw)
+        return out if isinstance(out, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+async def push_cache_delete(record_uuid: str) -> None:
+    """删除单条推送缓存（历史记录删除/清空时避免脏 page_id）。"""
+    ru = (record_uuid or "").strip()
+    if not ru:
+        return
+    r = await get_redis()
+    await r.delete(PUSH_CACHE_PREFIX + ru)
+
+
+async def push_cache_delete_many(record_uuids: Sequence[str]) -> None:
+    """批量删除推送缓存。"""
+    uuids = {str(u).strip() for u in record_uuids if str(u).strip()}
+    if not uuids:
+        return
+    r = await get_redis()
+    pipe = r.pipeline()
+    for u in uuids:
+        pipe.delete(PUSH_CACHE_PREFIX + u)
+    await pipe.execute()
+
+
+async def push_cache_set_merged(record_uuid: str, updates: Dict[str, Any]) -> None:
+    """
+    合并写入推送缓存并刷新 TTL。
+    notion_page_id / feishu_record_id 传空字符串不会覆盖已有非空值。
+    """
+    ru = (record_uuid or "").strip()
+    if not ru:
+        return
+    r = await get_redis()
+    key = PUSH_CACHE_PREFIX + ru
+    prev: Dict[str, Any] = {}
+    raw = await r.get(key)
+    if raw:
+        try:
+            p = json.loads(raw)
+            if isinstance(p, dict):
+                prev = p
+        except json.JSONDecodeError:
+            prev = {}
+    merged: Dict[str, Any] = {**prev}
+    for k, v in updates.items():
+        if v is None:
+            continue
+        if k in ("notion_page_id", "feishu_record_id") and v == "":
+            continue
+        merged[k] = v
+    await r.set(key, json.dumps(merged, ensure_ascii=False), ex=PUSH_CACHE_TTL_SEC)
 
 
 async def get_categories() -> List[str]:

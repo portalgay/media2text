@@ -67,16 +67,33 @@ class SupabaseAdapter(BaseDBAdapter):
         d["summarized"] = d.get("has_summary", False)
         d["pushed_notion"] = d.get("notion_pushed", False)
         d["pushed_feishu"] = d.get("feishu_pushed", False)
-        d["recognition_type"] = d.get("recognition_type") or "funasr"
+        rt = d.get("recognition_type")
+        rs = (str(rt).strip() if rt is not None else "") or "untranscribed"
+        if rs == "unrecognized":
+            rs = "untranscribed"
+        d["recognition_type"] = rs
         bm = d.get("batch_mode")
         d["batch_mode_display"] = normalize_batch_mode_display(bm)
         return d
 
-    def _insert_row(self, record: Dict[str, Any]) -> Tuple[int, str]:
+    @staticmethod
+    def _norm_recognition_type(record: Dict[str, Any]) -> str:
+        rt = record.get("recognition_type")
+        if rt is None:
+            return "untranscribed"
+        s = str(rt).strip()[:32]
+        if not s:
+            return "untranscribed"
+        if s == "unrecognized":
+            return "untranscribed"
+        return s
+
+    def _upsert_row(self, record: Dict[str, Any]) -> Tuple[int, str]:
         self._ensure()
         ru = (record.get("record_uuid") or "").strip() or uuid.uuid4().hex
         bm = normalize_batch_mode_db(record.get("batch_mode"))
-        payload = {
+        rts = self._norm_recognition_type(record)
+        base = {
             "task_id": record.get("task_id", ""),
             "category": record.get("category", "默认分类"),
             "batch_mode": bm,
@@ -87,22 +104,33 @@ class SupabaseAdapter(BaseDBAdapter):
             "status": record.get("status", "success"),
             "transcript_on_oss": bool(record.get("transcript_on_oss")),
             "has_summary": bool(record.get("has_summary")),
-            "notion_pushed": bool(record.get("notion_pushed")),
-            "feishu_pushed": bool(record.get("feishu_pushed")),
             "record_uuid": ru,
-            "recognition_type": (record.get("recognition_type") or "funasr")[:32],
+            "recognition_type": rts,
         }
-        res = self._client.table(self._table).insert(payload).execute()
+        res = self._client.table(self._table).select("id").eq("record_uuid", ru).limit(1).execute()
         rows = getattr(res, "data", None) or []
-        if not rows:
+        if rows:
+            eid = int(rows[0].get("id") or 0)
+            if eid:
+                self._client.table(self._table).update(base).eq("id", eid).execute()
+                return eid, ru
+
+        payload = {
+            **base,
+            "notion_pushed": bool(record.get("notion_pushed", False)),
+            "feishu_pushed": bool(record.get("feishu_pushed", False)),
+        }
+        res2 = self._client.table(self._table).insert(payload).execute()
+        rows2 = getattr(res2, "data", None) or []
+        if not rows2:
             raise RuntimeError("Supabase insert 无返回数据")
-        row = rows[0]
+        row = rows2[0]
         rid = int(row.get("id", 0))
         ruuid = str(row.get("record_uuid") or ru)
         return rid, ruuid
 
     async def save_record(self, record: Dict[str, Any]) -> Tuple[int, str]:
-        return await asyncio.to_thread(self._insert_row, record)
+        return await asyncio.to_thread(self._upsert_row, record)
 
     def _upd_summary(self, record_id: int, summary: str, has_summary: bool) -> None:
         self._ensure()
@@ -135,6 +163,7 @@ class SupabaseAdapter(BaseDBAdapter):
         record_id: int,
         captions: Optional[str],
         summary: Optional[str],
+        recognition_type: Optional[str],
     ) -> None:
         self._ensure()
         patch: Dict[str, Any] = {}
@@ -143,6 +172,8 @@ class SupabaseAdapter(BaseDBAdapter):
         if summary is not None:
             patch["summary"] = summary
             patch["has_summary"] = bool(str(summary).strip())
+        if recognition_type is not None:
+            patch["recognition_type"] = recognition_type
         if not patch:
             return
         self._client.table(self._table).update(patch).eq("id", record_id).execute()
@@ -153,10 +184,13 @@ class SupabaseAdapter(BaseDBAdapter):
         *,
         captions: Optional[str] = None,
         summary: Optional[str] = None,
+        recognition_type: Optional[str] = None,
     ) -> None:
-        if captions is None and summary is None:
+        if captions is None and summary is None and recognition_type is None:
             return
-        await asyncio.to_thread(self._upd_content, record_id, captions, summary)
+        await asyncio.to_thread(
+            self._upd_content, record_id, captions, summary, recognition_type
+        )
 
     def _get_records(self, page: int, page_size: int) -> dict:
         self._ensure()
@@ -244,6 +278,46 @@ class SupabaseAdapter(BaseDBAdapter):
             return
         await asyncio.to_thread(self._push_flags, clean, notion, feishu)
 
+    def _clean_positive_ids(self, ids: Sequence[int]) -> List[int]:
+        clean: List[int] = []
+        for rid in ids:
+            try:
+                xi = int(rid)
+                if xi > 0:
+                    clean.append(xi)
+            except (TypeError, ValueError):
+                continue
+        return clean
+
+    def _fetch_record_uuids_by_ids_sync(self, ids: Sequence[int]) -> List[str]:
+        clean = self._clean_positive_ids(ids)
+        if not clean:
+            return []
+        self._ensure()
+        res = self._client.table(self._table).select("record_uuid").in_("id", clean).execute()
+        out: set[str] = set()
+        for row in res.data or []:
+            ru = str(row.get("record_uuid") or "").strip()
+            if ru:
+                out.add(ru)
+        return sorted(out)
+
+    def _fetch_all_record_uuids_sync(self) -> List[str]:
+        self._ensure()
+        res = self._client.table(self._table).select("record_uuid").execute()
+        out: set[str] = set()
+        for row in res.data or []:
+            ru = str(row.get("record_uuid") or "").strip()
+            if ru:
+                out.add(ru)
+        return sorted(out)
+
+    async def fetch_record_uuids_by_ids(self, ids: Sequence[int]) -> List[str]:
+        return await asyncio.to_thread(self._fetch_record_uuids_by_ids_sync, ids)
+
+    async def fetch_all_record_uuids(self) -> List[str]:
+        return await asyncio.to_thread(self._fetch_all_record_uuids_sync)
+
     def _del_one(self, record_id: int) -> None:
         self._ensure()
         self._client.table(self._table).delete().eq("id", record_id).execute()
@@ -253,14 +327,7 @@ class SupabaseAdapter(BaseDBAdapter):
 
     def _del_many(self, ids: Sequence[int]) -> int:
         self._ensure()
-        clean: List[int] = []
-        for rid in ids:
-            try:
-                xi = int(rid)
-                if xi > 0:
-                    clean.append(xi)
-            except (TypeError, ValueError):
-                continue
+        clean = self._clean_positive_ids(ids)
         if not clean:
             return 0
         self._client.table(self._table).delete().in_("id", clean).execute()

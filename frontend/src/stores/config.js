@@ -39,9 +39,28 @@ const defaultState = () => ({
   supabase_key: '',
   supabase_table: 'records',
   filename_clean_regex: '',
+  /** 固定替换：每项 "旧字符串->新字符串"，新串空表示删除该旧串 */
+  filename_temp_rules: [],
+  /** 正则模板库（Redis），项：id, name, pattern, replacement, rule_type, description, enabled */
+  filename_regex_library: [],
+  /** 选中的模板 id，顺序即应用顺序 */
+  filename_selected_regex_ids: [],
   categories: [],
   prompts: [],
 })
+
+function normalizeRegexRule(r) {
+  if (!r || typeof r !== 'object') return null
+  return {
+    id: String(r.id || `rule_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`),
+    name: r.name ?? '',
+    pattern: r.pattern ?? '',
+    replacement: r.replacement ?? '',
+    rule_type: r.rule_type === 'extract' ? 'extract' : 'replace',
+    description: r.description ?? '',
+    enabled: r.enabled !== false,
+  }
+}
 
 export const useConfigStore = defineStore('config', {
   state: defaultState,
@@ -53,6 +72,14 @@ export const useConfigStore = defineStore('config', {
         if (k === 'categories' || k === 'prompts') return
         this[k] = d[k] !== undefined ? d[k] : def[k]
       })
+      this.filename_temp_rules = Array.isArray(d.filename_temp_rules)
+        ? d.filename_temp_rules.map((x) => String(x ?? ''))
+        : [...def.filename_temp_rules]
+      const libRaw = Array.isArray(d.filename_regex_library) ? d.filename_regex_library : []
+      this.filename_regex_library = libRaw.map(normalizeRegexRule).filter(Boolean)
+      this.filename_selected_regex_ids = Array.isArray(d.filename_selected_regex_ids)
+        ? d.filename_selected_regex_ids.map((x) => String(x))
+        : [...def.filename_selected_regex_ids]
     },
     async saveConfig(partial) {
       await api.putConfig(partial)
@@ -99,6 +126,9 @@ export const useConfigStore = defineStore('config', {
         summary_prompt_title: this.summary_prompt_title,
         push_notion_enabled: this.push_notion_enabled,
         push_feishu_enabled: this.push_feishu_enabled,
+        filename_temp_rules: [...(this.filename_temp_rules || [])],
+        filename_regex_library: (this.filename_regex_library || []).map((r) => ({ ...r })),
+        filename_selected_regex_ids: [...(this.filename_selected_regex_ids || [])],
       }
     },
     async persistMainPageToRedis() {
@@ -143,6 +173,9 @@ export const useConfigStore = defineStore('config', {
         supabase_key: this.supabase_key,
         supabase_table: this.supabase_table,
         filename_clean_regex: this.filename_clean_regex ?? '',
+        filename_temp_rules: [...(this.filename_temp_rules || [])],
+        filename_regex_library: (this.filename_regex_library || []).map((r) => ({ ...r })),
+        filename_selected_regex_ids: [...(this.filename_selected_regex_ids || [])],
       }
     },
   },

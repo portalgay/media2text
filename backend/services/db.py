@@ -3,7 +3,11 @@
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from core import redis_client as R
 from core.db_factory import get_db
+from core.logger import get_logger, log_error
+
+LOG = get_logger("db")
 
 
 async def init_db() -> None:
@@ -33,9 +37,13 @@ async def update_record_content(
     *,
     captions: Optional[str] = None,
     summary: Optional[str] = None,
+    recognition_type: Optional[str] = None,
 ) -> None:
     await (await get_db()).update_record_content(
-        record_id, captions=captions, summary=summary
+        record_id,
+        captions=captions,
+        summary=summary,
+        recognition_type=recognition_type,
     )
 
 
@@ -58,12 +66,35 @@ async def update_push_flags(
 
 
 async def delete_record(record_id: int) -> None:
-    await (await get_db()).delete_record(record_id)
+    ad = await get_db()
+    row = await ad.get_record(record_id)
+    ru = str(row.get("record_uuid") or "").strip() if row else ""
+    await ad.delete_record(record_id)
+    if ru:
+        try:
+            await R.push_cache_delete(ru)
+        except Exception as ex:
+            log_error(LOG, "-", "push_cache_delete", ex)
 
 
 async def delete_records(ids: Sequence[int]) -> int:
-    return await (await get_db()).delete_records(ids)
+    ad = await get_db()
+    uuids = await ad.fetch_record_uuids_by_ids(ids)
+    n = await ad.delete_records(ids)
+    if uuids:
+        try:
+            await R.push_cache_delete_many(uuids)
+        except Exception as ex:
+            log_error(LOG, "-", "push_cache_delete_many", ex)
+    return n
 
 
 async def clear_all_records() -> None:
-    await (await get_db()).clear_all_records()
+    ad = await get_db()
+    uuids = await ad.fetch_all_record_uuids()
+    await ad.clear_all_records()
+    if uuids:
+        try:
+            await R.push_cache_delete_many(uuids)
+        except Exception as ex:
+            log_error(LOG, "-", "push_cache_delete_many", ex)

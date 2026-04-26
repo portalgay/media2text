@@ -174,6 +174,11 @@ export async function historySummarize(recordId) {
   return data
 }
 
+export async function historyTranscribe(recordId) {
+  const { data } = await http.post(`/history/${recordId}/transcribe`)
+  return data
+}
+
 export async function historyUploadCaptionOss(recordId) {
   const { data } = await http.post(`/history/${recordId}/upload-caption-oss`)
   return data
