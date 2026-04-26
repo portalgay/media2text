@@ -40,7 +40,9 @@
 ## 1. 项目介绍
 
 **media2text** 是一个运行在本地或云端的媒体文件转文本平台。
-![img.png](img.png)
+![img_1.png](img_1.png)
+![img_2.png](img_2.png)
+![img_3.png](img_3.png)
 
 你可以把它理解为一个**私有的、可灵活配置的"音视频内容提取器"**：
 
